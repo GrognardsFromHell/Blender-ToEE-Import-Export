@@ -74,15 +74,10 @@ class ImportSKA(bpy.types.Operator, ImportHelper, IO3DSOrientationHelper):
             description="Set Local Location on bone children ",
             default=True,
             )
-    use_init_keyframes_only = BoolProperty(
-            name="Use Initial Keyframe Only",
-            description="Ignores keyframes after the 1st",
-            default=False,
-            )
     apply_animations = BoolProperty(
             name="Apply Animations",
             description="Ignores all keyframes (only uses the stuff in SKA bone)",
-            default=False,
+            default=True,
             )
     def execute(self, context):
         from . import import_ska
