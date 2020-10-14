@@ -7,12 +7,14 @@ import mathutils
 from mathutils import Vector
 
 from SKA_Export.ska import SkaAnimStream
-from .ska import SkmFile, SkaFile
+from .ska import SkmFile, SkaFile, MdfFile
+from bpy_extras.wm_utils.progress_report import ProgressReport
+from bpy_extras import node_shader_utils
 
 BOUNDS_SKA = []
-USE_SHADELESS = True
 global scn
 scn = None
+progress = None
 
 object_dictionary = {}
 object_matrix = {}
@@ -21,46 +23,40 @@ global ToEE_data_dir
 ToEE_data_dir = ""  # ToEE data dir. Extracted from the filename, assuming it is located inside the data/art folder, and its textures are all present there.
 
 
-def add_texture_to_material(image, texture, scale, offset, extension, material, mapto):
-    '''
-    Adds new texture slot to material, and assigns it an image
-    '''
-
+def load_material_image(mat_wrap, image, texture, scale, offset, extension, mapto):
+    
     if mapto not in {'COLOR', 'SPECULARITY', 'ALPHA', 'NORMAL'}:
         print(
             "\tError: Cannot map to %r\n\tassuming diffuse color. modify material %r later." %
-            (mapto, material.name)
+            (mapto, mat_wrap.name)
         )
+        raise Exception("Invalid mapto %r" % mapto)
         mapto = "COLOR"
 
     if image:
         texture.image = image
+    
+    def _generic_tex_set(nodetex, image, texcoords, translation, scale):
+        nodetex.image = image
+        nodetex.texcoords = texcoords
+        if translation is not None:
+            nodetex.translation = translation
+        if scale is not None:
+            nodetex.scale = scale
 
-    mtex = material.texture_slots.add()
-    mtex.texture = texture
-    mtex.texture_coords = 'UV'
-    mtex.use_map_color_diffuse = False
+    
+    tex_scale = (scale[0], scale[1], 1.0)
+    tex_offset = (offset[0], offset[1], 0.0)
 
-    mtex.scale = (scale[0], scale[1], 1.0)
-    mtex.offset = (offset[0], offset[1], 0.0)
-
-    texture.extension = 'REPEAT'
-    if extension == 'mirror':
-        # 3DS mirror flag can be emulated by these settings (at least so it seems)
-        texture.repeat_x = texture.repeat_y = 2
-        texture.use_mirror_x = texture.use_mirror_y = True
-    elif extension == 'decal':
-        # 3DS' decal mode maps best to Blenders CLIP
-        texture.extension = 'CLIP'
-
+    
     if mapto == 'COLOR':
-        mtex.use_map_color_diffuse = True
+        _generic_tex_set(mat_wrap.base_color_texture, image, 'UV', tex_offset, tex_scale)
     elif mapto == 'SPECULARITY':
-        mtex.use_map_specular = True
+        _generic_tex_set(mat_wrap.specular_texture, image, 'UV', tex_offset, tex_scale)
     elif mapto == 'ALPHA':
-        mtex.use_map_alpha = True
+        _generic_tex_set(mat_wrap.alpha_texture, image, 'UV', tex_offset, tex_scale)
     elif mapto == 'NORMAL':
-        mtex.use_map_normal = True
+        _generic_tex_set(mat_wrap.normalmap_texture, image, 'UV', tex_offset, tex_scale)
 
 
 def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
@@ -68,12 +64,19 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
 
     contextObName = None
     contextMaterial = None
+    context_mat_wrap = None
     contextMatrix_rot = None  # Blender.mathutils.Matrix(); contextMatrix.identity()
     # contextMatrix_tx = None # Blender.mathutils.Matrix(); contextMatrix.identity()
 
     TEXTURE_DICT = {}
     MATDICT = {}
+    WRAPDICT = {}
+    # mdf_resolve
+        # read_texture
+            # bpy_extras.image_utils.load_image
+            # load_material_image
 
+    
     def read_texture(texture_path, name, mapto):
         new_texture = bpy.data.textures.new(name, type='IMAGE')
 
@@ -85,24 +88,27 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
 
         # add the map to the material in the right channel
         if img:
-            add_texture_to_material(img, new_texture, (u_scale, v_scale),
-                                    (u_offset, v_offset), extension, contextMaterial, mapto)
+            load_material_image(context_mat_wrap, img, new_texture, (u_scale, v_scale),
+                                    (u_offset, v_offset), extension, mapto)
 
     def mdf_resolve(mdf_filename):
         mdf_fullpath = os.path.join(ToEE_data_dir, mdf_filename)
         if not os.path.exists(mdf_fullpath):
             print("MDF %s not found" % mdf_fullpath)
             return
-        mdf_file = open(mdf_fullpath, 'rb')
-        mdf_raw = mdf_file.read().decode()
-        mdf_file.close()
-        texture_files = mdf_raw.split("\"")
-        texture_filepath = texture_files[1]  # TODO handling more than one texture (e.g. phase spiders)
-        print("Registering texture: %s" % texture_filepath)
-        read_texture(texture_filepath, "Diffuse",
+        
+        with open(mdf_fullpath, 'rb') as mdf_file:
+            mdf_raw = mdf_file.read()
+
+        mdf_data = MdfFile()
+        mdf_data.from_raw_data(mdf_raw)
+        
+        print("Registering texture: %s" % mdf_data.texture_filepath)
+        read_texture(mdf_data.texture_filepath, "Diffuse",
                      "COLOR")  # "Specular / SPECULARITY", "Opacity / ALPHA", "Bump / NORMAL"
         return
-
+    
+        
     def putContextMesh(skm_data):  # myContextMesh_vertls, myContextMesh_facels, myContextMeshMaterials):
         '''
         Creates Mesh Object from vertex/face/material data
@@ -142,14 +148,14 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
 
         # Get UV coordinates for each polygon's vertices
         print("Setting UVs")
-        bmesh.uv_textures.new()
-        uv_faces = bmesh.uv_textures.active.data[:]
+        bmesh.uv_layers.new(do_init = False)
+        uv_faces = bmesh.uv_layers.active.data[:]
         if uv_faces:
             for fidx, fa in enumerate(skm_data.face_data):
                 bmesh.polygons[fidx].material_index = fa.material_id
-                bmat = bmesh.materials[fa.material_id]
-                img = TEXTURE_DICT.get(bmat.name)
-                uv_faces[fidx].image = img
+                # bmat = bmesh.materials[fa.material_id]
+                # img = TEXTURE_DICT.get(bmat.name)
+                # uv_faces[fidx].image = img
             uvl = bmesh.uv_layers.active.data[:]
             for fidx, pl in enumerate(bmesh.polygons):
                 face = skm_data.face_data[fidx]
@@ -166,8 +172,11 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
         # Create new object from mesh
         ob = bpy.data.objects.new(contextObName, bmesh)
         object_dictionary[contextObName] = ob
-        SCN.objects.link(ob)
         importedObjects.append(ob)
+
+        collection = SCN.collection
+        collection.objects.link(ob)
+        ob.select_set(True)
 
         if contextMatrix_rot:
             ob.matrix_local = contextMatrix_rot
@@ -182,9 +191,9 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
         obj = object_dictionary[contextObName]
         barm = bpy.data.armatures.new(armatureName)
         rig = bpy.data.objects.new(rigObName, barm)
-        SCN.objects.link(rig)
-        SCN.objects.active = rig
-        rig.select = True
+        SCN.collection.objects.link(rig)
+        bpy.context.view_layer.objects.active = rig
+        rig.select_set(True)
         bpy.ops.object.mode_set(mode='EDIT')  # set to Edit Mode so bones can be added
         bone_dump = open(os.path.join(ToEE_data_dir, "bone_dump.txt"), 'w')
 
@@ -214,7 +223,7 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
             print(world, file=fh)
             print("****************************************************************************", file=fh)
 
-            vg = obj.vertex_groups.new(bone_name)  # Create matching vertex groups
+            vg = obj.vertex_groups.new(name = bone_name)  # Create matching vertex groups
             vertex_groups[bone_id] = vg
 
         fh.close()
@@ -240,27 +249,49 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
         # rig_dictionary[contextObName] = obj
         importedObjects.append(obj)
 
+    def dump_bones():
+        bone_dump = open(os.path.join(ToEE_data_dir, 'bone_dump_skm.txt'), 'w')
+        for skm_bone_id, bd in enumerate(skm_data.bone_data):
+            bone_dump.write(
+                "\n\n*******  %d %s  ********** " % (skm_bone_id, str(bd.name)) + " Parent: (%d)" % (bd.parent_id))
+            bone_dump.write("\n")
+            bone_dump.write("WorldInverse matrix: " + str(bd.world_inverse))
+            bone_dump.write("\n")
+        bone_dump.close()
     contextObName = "ToEE Model"
     rigObName = "ToEE Rig"
     armatureName = "ToEE Model Skeleton"
+    
     ## Create materials
-    for mm in skm_data.material_data:
-        contextMaterial = bpy.data.materials.new('Material')
+    progress.step("Loading materials and images...")
+    # create_materials(skm_data)
+    for mm in skm_data.material_data:  
         mdf_path = mm.id.name  # path relative to data_dir (that's how ToEE rolls)
         material_name = mdf_path
-        contextMaterial.name = material_name  # material_name.rstrip()
+
+        contextMaterial = bpy.data.materials.new(material_name) # material_name.rstrip()
+        contextMaterial.use_nodes = True
+
+        context_mat_wrap = node_shader_utils.PrincipledBSDFWrapper(contextMaterial, is_readonly=False)
+        context_mat_wrap.use_nodes = True
+
         print("Registering material: %s" % material_name)
         MATDICT[material_name] = contextMaterial
+        WRAPDICT[contextMaterial] = context_mat_wrap
+        
         mdf_resolve(mdf_path)
-        if USE_SHADELESS:
-            contextMaterial.use_shadeless = True
 
     # Create Mesh object
+    progress.step("Creating Mesh...")
     putContextMesh(skm_data)
 
     # Create Rig
+    progress.step("Creating Rig...")
     putRig(skm_data)
 
+    dump_bones()
+
+    progress.leave_substeps("Finished SKM conversion.")
     return
 
 
@@ -315,7 +346,10 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                     ska_to_skm_bone_mapping[ska_idx] = skm_idx
                     found = True
                     break
-            if not found:
+            if not found and ska_idx == 0:
+                print("Could not find mapping of SKA bone 0 by name; will assume its matching SKM bone id is also 0.")
+                ska_to_skm_bone_mapping[ska_idx] = 0
+            elif not found:
                 ska_to_skm_bone_mapping[ska_idx] = -1
                 print("Could not find mapping of SKA bone id %d!" % ska_idx)
         return ska_to_skm_bone_mapping
@@ -349,8 +383,9 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
         # posebone.scale = ska_bd.scale
         rest_state.apply_to_posebone(posebone, loc=ska_bd.translation, rot=ska_bd.rotation)
-
+    progress.enter_substeps(anim_count, "Generating animation F-Curves (%d)..." % anim_count)
     for i in range(0, anim_count):
+        progress.step(i)
         ad = ska_data.animation_data[i]
         anim_header = ad.header
         action_name = str(anim_header.name)
@@ -384,6 +419,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
             for bone_idx, keyframes in stream.rotation_channels.items():
                 skm_bone_idx = ska_to_skm_bone_mapping[bone_idx]
+                # print("Skm bone idx: %d" % skm_bone_idx)
                 rest_pose = bone_rest_state[skm_bone_idx]
 
                 posebone = rig.pose.bones[skm_bone_idx]
@@ -397,13 +433,13 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                     # Transform rotation to be relative to rest pose
                     rotation = rest_pose.get_rel_rot(rotation)
 
-                    kf = curve_w.keyframe_points.insert(1 + frame, rotation.w, {'FAST'})
+                    kf = curve_w.keyframe_points.insert(1 + frame, rotation.w, options={'FAST'})
                     kf.interpolation = 'LINEAR'
-                    kf = curve_x.keyframe_points.insert(1 + frame, rotation.x, {'FAST'})
+                    kf = curve_x.keyframe_points.insert(1 + frame, rotation.x, options={'FAST'})
                     kf.interpolation = 'LINEAR'
-                    kf = curve_y.keyframe_points.insert(1 + frame, rotation.y, {'FAST'})
+                    kf = curve_y.keyframe_points.insert(1 + frame, rotation.y, options={'FAST'})
                     kf.interpolation = 'LINEAR'
-                    kf = curve_z.keyframe_points.insert(1 + frame, rotation.z, {'FAST'})
+                    kf = curve_z.keyframe_points.insert(1 + frame, rotation.z, options={'FAST'})
                     kf.interpolation = 'LINEAR'
 
                 curve_w.update()
@@ -425,17 +461,18 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                     # Transform location to be relative to rest pose
                     location = rest_pose.get_rel_loc(location)
 
-                    kf = curve_x.keyframe_points.insert(1 + frame, location.x, {'FAST'})
+                    kf = curve_x.keyframe_points.insert(1 + frame, location.x, options={'FAST'})
                     kf.interpolation = 'LINEAR'
-                    kf = curve_y.keyframe_points.insert(1 + frame, location.y, {'FAST'})
+                    kf = curve_y.keyframe_points.insert(1 + frame, location.y, options={'FAST'})
                     kf.interpolation = 'LINEAR'
-                    kf = curve_z.keyframe_points.insert(1 + frame, location.z, {'FAST'})
+                    kf = curve_z.keyframe_points.insert(1 + frame, location.z, options={'FAST'})
                     kf.interpolation = 'LINEAR'
 
                 curve_x.update()
                 curve_y.update()
                 curve_z.update()
-
+    progress.leave_substeps("Finished")
+    return
 
 def get_ToEE_data_dir(filepath):
     '''
@@ -463,60 +500,74 @@ def load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
              USE_LOCAL_LOCATION=True,
              APPLY_ANIMATIONS=False,
              global_matrix=None):
-    global SCN, ToEE_data_dir
+    global SCN, ToEE_data_dir, progress
 
     # XXX
     # 	if BPyMessages.Error_NoFile(filepath):
     # 		return
     time1 = time.clock()  # for timing the import duration
+    # progress = ProgressReport(context.window_manager)
+    with ProgressReport(context.window_manager) as progress:
 
-    print("importing SKA: %r..." % (filepath), end="")
-    # filepath = 'D:/GOG Games/ToEECo8/data/art/meshes/Monsters/Giants/Hill_Giants/Hill_Giant_2/Zomb_giant_2.SKA'
-    ska_filepath = filepath
-    skm_filepath = get_skm_filepath(ska_filepath)
+        print("importing SKA: %r..." % (filepath), end="")
+        # filepath = 'D:/GOG Games/ToEECo8/data/art/meshes/Monsters/Giants/Hill_Giants/Hill_Giant_2/Zomb_giant_2.SKA'
+        ska_filepath = filepath
+        skm_filepath = get_skm_filepath(ska_filepath)
 
-    if bpy.ops.object.select_all.poll():
-        bpy.ops.object.select_all(action='DESELECT')
+        if bpy.ops.object.select_all.poll():
+            bpy.ops.object.select_all(action='DESELECT')
 
-    ToEE_data_dir = get_ToEE_data_dir(filepath)
-    print("Data dir: %s", ToEE_data_dir)
+        ToEE_data_dir = get_ToEE_data_dir(filepath)
+        print("Data dir: %s", ToEE_data_dir)
 
-    # Read data into intermediate SkmFile and SkaFile objects
-    skm_data = SkmFile()
-    ska_data = SkaFile()
+        # Read data into intermediate SkmFile and SkaFile objects
+        skm_data = SkmFile()
+        ska_data = SkaFile()
 
-    # SKM file
-    with open(skm_filepath, 'rb') as file:
-        print('Opened file: ', skm_filepath)
-        skm_data.read(file)
+        # SKM file
+        progress.enter_substeps(1, "Reading SKM File %r..." %skm_filepath)
+        with open(skm_filepath, 'rb') as file:
+            print('Opened file: ', skm_filepath)
+            skm_data.read(file)
 
-    # SKA file
-    with open(ska_filepath, 'rb') as file:
-        print('Opened file: ', ska_filepath)
-        ska_data.read(file)
+        # SKA file
+        progress.enter_substeps(1, "Reading SKA File %r..." % ska_filepath)
+        with open(ska_filepath, 'rb') as file:
+            print('Opened file: ', ska_filepath)
+            if APPLY_ANIMATIONS:
+                ska_data.read(file)
 
-    if IMPORT_CONSTRAIN_BOUNDS:
-        BOUNDS_SKA[:] = [1 << 30, 1 << 30, 1 << 30, -1 << 30, -1 << 30, -1 << 30]
-    else:
-        del BOUNDS_SKA[:]
+        if IMPORT_CONSTRAIN_BOUNDS:
+            BOUNDS_SKA[:] = [1 << 30, 1 << 30, 1 << 30, -1 << 30, -1 << 30, -1 << 30]
+        else:
+            del BOUNDS_SKA[:]
 
-    # fixme, make unglobal, clear in case
-    object_dictionary.clear()
-    object_matrix.clear()
+        # fixme, make unglobal, clear in case
+        object_dictionary.clear()
+        object_matrix.clear()
 
-    scn = context.scene
-    # 	scn = bpy.data.scenes.active
-    SCN = scn
-    # SCN_OBJECTS = scn.objects
-    # SCN_OBJECTS.selected = [] # de select all
+        scn = context.scene
+        # 	scn = bpy.data.scenes.active
+        SCN = scn
+        # SCN_OBJECTS = scn.objects
+        # SCN_OBJECTS.selected = [] # de select all
 
-    importedObjects = []  # Fill this list with objects
-    skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH)
-    ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, USE_LOCAL_LOCATION,
-                   APPLY_ANIMATIONS)
-    # fixme, make unglobal
-    object_dictionary.clear()
-    object_matrix.clear()
+        importedObjects = []  # Fill this list with objects
+        progress.enter_substeps(3, "Converting SKM to Blender model...")
+        skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH)
+        
+        # In Blender 2.80 API new objects mast be linked not to the scene, but to the scene collections:
+        view_layer = context.view_layer
+        view_layer.update()
+
+        # print(importedObjects)
+        if global_matrix:
+            print(global_matrix)
+            for ob in importedObjects:
+                if True: # ob.parent is None:
+                    ob.matrix_world = global_matrix
+                else:
+                    ob.parent.matrix_world = ob.parent.matrix_world * global_matrix 
 
     if APPLY_MATRIX:
         for ob in importedObjects:
@@ -524,70 +575,75 @@ def load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
                 me = ob.data
                 me.transform(ob.matrix_local.inverted())
 
-    # print(importedObjects)
-    if global_matrix:
         for ob in importedObjects:
-            if ob.parent is None:
-                ob.matrix_world = ob.matrix_world * global_matrix
+            ob.select_set(True)
 
-    for ob in importedObjects:
-        ob.select = True
+        progress.enter_substeps(1, "Converting SKA to Blender animations...")
+        if APPLY_ANIMATIONS:
+            ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, USE_LOCAL_LOCATION,
+                        APPLY_ANIMATIONS)
+        
+        # fixme, make unglobal
+        object_dictionary.clear()
+        object_matrix.clear()
 
-    # Done DUMMYVERT
-    """
-    if IMPORT_AS_INSTANCE:
-        name = filepath.split('\\')[-1].split('/')[-1]
-        # Create a group for this import.
-        group_scn = Scene.New(name)
-        for ob in importedObjects:
-            group_scn.link(ob) # dont worry about the layers
+        # Done DUMMYVERT
+        """
+        if IMPORT_AS_INSTANCE:
+            name = filepath.split('\\')[-1].split('/')[-1]
+            # Create a group for this import.
+            group_scn = Scene.New(name)
+            for ob in importedObjects:
+                group_scn.link(ob) # dont worry about the layers
 
-        grp = Blender.Group.New(name)
-        grp.objects = importedObjects
+            grp = Blender.Group.New(name)
+            grp.objects = importedObjects
 
-        grp_ob = Object.New('Empty', name)
-        grp_ob.enableDupGroup = True
-        grp_ob.DupGroup = grp
-        scn.link(grp_ob)
-        grp_ob.Layers = Layers
-        grp_ob.sel = 1
-    else:
-        # Select all imported objects.
-        for ob in importedObjects:
-            scn.link(ob)
-            ob.Layers = Layers
-            ob.sel = 1
-    """
+            grp_ob = Object.New('Empty', name)
+            grp_ob.enableDupGroup = True
+            grp_ob.DupGroup = grp
+            scn.link(grp_ob)
+            grp_ob.Layers = Layers
+            grp_ob.sel = 1
+        else:
+            # Select all imported objects.
+            for ob in importedObjects:
+                scn.link(ob)
+                ob.Layers = Layers
+                ob.sel = 1
+        """
+        
+        view_layer = context.view_layer
+        view_layer.update()
+        
 
-    context.scene.update()
+        axis_min = [1000000000] * 3
+        axis_max = [-1000000000] * 3
+        global_clamp_size = IMPORT_CONSTRAIN_BOUNDS
+        if global_clamp_size != 0.0:
+            # Get all object bounds
+            for ob in importedObjects:
+                for v in ob.bound_box:
+                    for axis, value in enumerate(v):
+                        if axis_min[axis] > value:
+                            axis_min[axis] = value
+                        if axis_max[axis] < value:
+                            axis_max[axis] = value
 
-    axis_min = [1000000000] * 3
-    axis_max = [-1000000000] * 3
-    global_clamp_size = IMPORT_CONSTRAIN_BOUNDS
-    if global_clamp_size != 0.0:
-        # Get all object bounds
-        for ob in importedObjects:
-            for v in ob.bound_box:
-                for axis, value in enumerate(v):
-                    if axis_min[axis] > value:
-                        axis_min[axis] = value
-                    if axis_max[axis] < value:
-                        axis_max[axis] = value
+            # Scale objects
+            max_axis = max(axis_max[0] - axis_min[0],
+                        axis_max[1] - axis_min[1],
+                        axis_max[2] - axis_min[2])
+            scale = 1.0
 
-        # Scale objects
-        max_axis = max(axis_max[0] - axis_min[0],
-                       axis_max[1] - axis_min[1],
-                       axis_max[2] - axis_min[2])
-        scale = 1.0
+            while global_clamp_size < max_axis * scale:
+                scale = scale / 10.0
 
-        while global_clamp_size < max_axis * scale:
-            scale = scale / 10.0
+            scale_mat = mathutils.Matrix.Scale(scale, 4)
 
-        scale_mat = mathutils.Matrix.Scale(scale, 4)
-
-        for obj in importedObjects:
-            if obj.parent is None:
-                obj.matrix_world = scale_mat * obj.matrix_world
+            for obj in importedObjects:
+                if obj.parent is None:
+                    obj.matrix_world = scale_mat * obj.matrix_world
 
     # Select all new objects.
     print(" done in %.4f sec." % (time.clock() - time1))

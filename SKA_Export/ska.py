@@ -6,17 +6,29 @@ from typing import List
 import mathutils
 from mathutils import Vector, Quaternion
 
+def write_short(file, data):
+    file.write( struct.pack("<h", data))
+
+def write_short_list(file, data):
+    file.write( struct.pack("<%dh" % len(data), *data))
+
+def write_float_list(file, data):
+    file.write( struct.pack("<%df" % len(data), *data))
+
+def matrix4_to_3x4_array(mat):
+    """Concatenate matrix's columns into a single, flat tuple"""
+    return tuple(f for v in mat[0:3] for f in v)
 
 class FixedLengthName(object):
     __slots__ = "name", "size"
 
     def __init__(self, Name="", Size=48):
         if len(Name) == 0:
-            self.name = Name
-        else:
             self.name = ""
+        else:
+            self.name = Name
         self.size = Size
-        # check if larger than 48 characters?
+        assert len(self.name) <= Size, "FixedLengthName: must be shorter than Size (%d)!" % Size
 
     def from_raw_data(self, rawdata):
         self.name = rawdata.split(b'\0')[0].decode()
@@ -25,10 +37,12 @@ class FixedLengthName(object):
         return self.size
 
     def write(self, file):
-        name_len = len(self.name)
-        file.write(self.name)
+        
+        b_name = bytes(self.name.encode() )
+        name_len = len(b_name)
+        file.write(b_name)
         for p in range(0, self.size - name_len):
-            file.write('\0')
+            file.write(b'\0')
 
     def __str__(self):
         return str(self.name)
@@ -59,8 +73,8 @@ class SkaBone(object):
         self.translation = mathutils.Vector(translation[0:3])
 
     def write(self, file):
-        self.flags.write(file)
-        self.parent_id.write(file)
+        write_short(file, self.flags) 
+        write_short(file, self.parent_id)
         self.name.write(file)
         self.scale.write(file)
         self.rotation.write(file)
@@ -90,13 +104,17 @@ class SkmBone:
         self.parent_id = struct.unpack('<h', rawdata[2:4])[0]
         self.name.from_raw_data(rawdata[4:52])
         tmp = struct.unpack('<12f', rawdata[52:52 + 48])
-        self.world_inverse = [tmp[i * 4:(i + 1) * 4] for i in range(0, 3)]
+        self.world_inverse = [tmp[i * 4:(i + 1) * 4] for i in range(0, 3)] 
+        # [ [t0...t3],
+        #   [t4...t7],
+        #   [t8..t11] ]
+        return
 
     def write(self, file):
-        self.flags.write(file)
-        self.parent_id.write(file)
+        write_short(file, self.flags) 
+        write_short(file, self.parent_id)
         self.name.write(file)
-        self.world_inverse.write(file)
+        write_float_list(file, self.world_inverse)
 
     @staticmethod
     def get_size():
@@ -107,7 +125,11 @@ class SkmBone:
 
 
 class SkmMaterial(object):
+    '''
+    id - path relative to ToEE data dir
+    '''
     __slots__ = ['id']
+    id: FixedLengthName
 
     def __init__(self, id=""):
         self.id = FixedLengthName(id, 128)
@@ -115,10 +137,38 @@ class SkmMaterial(object):
     def from_raw_data(self, rawdata):
         self.id.from_raw_data(rawdata)
 
+    def write(self, file):
+        self.id.write(file)
     @staticmethod
     def get_size():
         return 128
 
+class MdfFile(object):
+    __slots__ = ['texture_filepath']
+    texture_filepath: str
+
+    def __init__(self):
+        self.texture_filepath = ''
+        return
+
+    def from_raw_data(self, rawdata):
+        decoded = rawdata.decode()
+        texture_files = decoded.split("\"")
+        if len(texture_files) < 2:
+            raise Exception('No texture set in MDF!')
+        if len(texture_files) > 3:
+            print('Unhandled MDF 2nd texture!')
+            # TODO handling more than one texture (e.g. phase spiders)
+        
+        self.texture_filepath = texture_files[1]
+        return
+    def write(self, file):
+        file.write("Textured\n")
+        file.write("Texture \"")
+        file.write(self.texture_filepath)
+        file.write("\"\n")
+        return
+    
 
 class SkaAnimKeyframeBoneData(object):
     __slots__ = "bone_id", "flags", "frame", "scale_next_frame", "scale", "rotation_next_frame", "rotation", "translation_next_frame", "translation"
@@ -500,19 +550,50 @@ class SkaFile:
 
 class SkmVertex(object):
     __slots__ = "pos", "normal", "uv", "attachment_bones", "attachment_weights"
+    pos: List[float]
+    normal: List[float]
+    uv: List[float]
+    attachment_bones: List[int]
+    attachment_weights: List[float]
+
+    def __init__(self):
+        self.pos = []
+        self.normal = []
+        self.uv = []
+        self.attachment_bones = []
+        self.attachment_weights = []
+
+    @property
+    def attachment_count(self):
+        return len(self.attachment_bones)
 
     def from_raw_data(self, rawdata):
         self.pos = struct.unpack('<4f', rawdata[0:0 + 16])
         self.normal = struct.unpack('<4f', rawdata[0 + 16:0 + 32])
         self.uv = struct.unpack('<2f', rawdata[0 + 32:0 + 40])
+        dummy = struct.unpack('<h', rawdata[40:42])[0]
+        # if dummy != 0:
+            # print('sheeit')
         attachment_count = struct.unpack('<h', rawdata[42:44])[0]
         if attachment_count > 6:
-            print('wtf')
+            raise Exception("SkmVertex: Unexcepted number of attachments read!")
         attachment_count = max(0, min(attachment_count, 6))
         self.attachment_bones = []
         self.attachment_bones = struct.unpack("<%dh" % attachment_count, rawdata[44:44 + attachment_count * 2])
         self.attachment_weights = struct.unpack("<%df" % attachment_count,
                                                 rawdata[44 + 12:44 + 12 + attachment_count * 4])
+
+    def write(self, file):
+        write_float_list(file, self.pos)
+        write_float_list(file, self.normal)
+        write_float_list(file, self.uv)
+        
+        file.write( struct.pack('<h', 0) )
+        file.write( struct.pack('<h', self.attachment_count) )
+
+        write_short_list( file, self.attachment_bones + [0 for _ in range(self.attachment_count, 6)] )
+        write_float_list( file, self.attachment_weights + [0.0 for _ in range(self.attachment_count, 6)] )
+        return
 
     @staticmethod
     def get_size():
@@ -521,11 +602,17 @@ class SkmVertex(object):
 
 class SkmFace(object):
     __slots__ = "material_id", "vertex_ids"
-
+    material_id: int
+    vertex_ids: List[int]
     def from_raw_data(self, rawdata):
         self.material_id = struct.unpack('<h', rawdata[0:2])[0]
         self.vertex_ids = struct.unpack('<3h', rawdata[2:8])
 
+    def write(self, file):
+        write_short(file, self.material_id)
+        write_short_list(file, self.vertex_ids)
+        return
+    
     @staticmethod
     def get_size():
         return 8
@@ -535,7 +622,11 @@ class SkmFile(object):
     __slots__ = ["bone_data", "material_data",
                  "vertex_data", "face_data",
                  "_fileraw", "_dataidx"]
-
+    bone_data: List[SkmBone]
+    material_data: List[SkmMaterial]
+    vertex_data: List[SkmVertex]
+    face_data: List[SkmFace]
+    
     def __init__(self):
         self.bone_data = []
         self.material_data = []
@@ -554,7 +645,7 @@ class SkmFile(object):
         count = struct.unpack('<i', self._fileraw[24:28])[0]
         offset = struct.unpack('<i', self._fileraw[28:32])[0]
         print(count, 'faces, offset: ', offset)
-        DATUM_SIZE = 8
+        DATUM_SIZE = SkmFace.get_size()
         for i in range(0, count):
             data_start = offset + DATUM_SIZE * i
             newDatum = SkmFace()
@@ -566,7 +657,7 @@ class SkmFile(object):
         offset = struct.unpack('<i', self._fileraw[20:24])[0]
         print(count, 'vertices, offset: ', offset)
 
-        DATUM_SIZE = 80
+        DATUM_SIZE = SkmVertex.get_size()
         for i in range(0, count):
             data_start = offset + DATUM_SIZE * i
             newDatum = SkmVertex()
@@ -579,12 +670,32 @@ class SkmFile(object):
         offset = struct.unpack('<i', self._fileraw[12:16])[0]
         print(count, 'materials, offset: ', offset)
 
-        DATUM_SIZE = 128
+        DATUM_SIZE = SkmMaterial.get_size()
         for i in range(0, count):
             data_start = offset + DATUM_SIZE * i
             newDatum = SkmMaterial()
             newDatum.from_raw_data(self._fileraw[data_start:data_start + DATUM_SIZE])
             self.material_data.append(newDatum)
+    
+    def write_bones(self, file):
+        for bd in self.bone_data:
+            bd.write(file)
+        return
+
+    def write_materials(self, file):
+        for skm_mat in self.material_data:
+            skm_mat.write(file)
+        return
+    
+    def write_vertices(self,file):
+        for vertex in self.vertex_data:
+            vertex.write(file)
+        return
+    
+    def write_faces(self, file):
+        for face in self.face_data:
+            face.write(file)
+        return
 
     def get_bone_data(self):
         bone_count = struct.unpack('<i', self._fileraw[0:4])[0]
@@ -599,30 +710,54 @@ class SkmFile(object):
             self.bone_data.append(newbone)
 
     def write(self, file):
+        BONE_DATA_OFFSET = 40  # always 24
+        
         # first write the header
 
-        # bone data
+        # bone header data
         bone_count = len(self.bone_data)
-        bone_data_offset = 24  # always 24
-        file.write(struct.pack("<2i", bone_count, bone_data_offset))
-        self.write_bones(file)
-
-        # material data
+        file.write(struct.pack("<2i", bone_count, BONE_DATA_OFFSET)) # 0:8
+        bone_data_size = self.get_bone_data_length()
+        
+        # material header data
         material_count = len(self.material_data)
-        material_data_offset = bone_data_offset + self.get_bone_data_length()
-        file.write(struct.pack("<2i", material_count, material_data_offset))
+        material_data_offset = BONE_DATA_OFFSET + bone_data_size
+        file.write(struct.pack("<2i", material_count, material_data_offset)) # 8:16
+        material_data_size = self.get_material_data_length()
+
+        # vertex header data
+        vertex_count = len(self.vertex_data)
+        vertex_data_offset = material_data_offset + material_data_size
+        file.write(struct.pack("<2i", vertex_count, vertex_data_offset)) # 16:24
+        vertex_data_size = self.get_vertex_data_length()
+        
+        # face header data
+        face_count = len(self.face_data)
+        face_data_offset = vertex_data_offset + vertex_data_size
+        file.write(struct.pack("<2i", face_count, face_data_offset)) # 24:32
+        face_data_size = self.get_face_data_length()
+
+        # write some more dummy stuff I guess
+        file.write(struct.pack("<2i", 0, 0)) # 32:40
 
         # *** write data ***
+        self.write_bones(file)
+        self.write_materials(file)
+        self.write_vertices(file)
+        self.write_faces(file)
 
     def get_bone_data_length(self):
-        return len(self.bone_data) * 100
+        return len(self.bone_data) * SkmBone.get_size()
 
     def get_material_data_length(self):
-        return len(self.material_data) * 128
+        return len(self.material_data) * SkmMaterial.get_size()
 
-    def write_bones(self, file):
-        for bd in self.bone_data:
-            bd.write(file)
+    def get_vertex_data_length(self):
+        return len(self.vertex_data) * SkmVertex.get_size()
+
+    def get_face_data_length(self):
+        return len(self.face_data) * SkmFace.get_size()    
+
 
     def add_bone(self, new_bone):
         self.bone_data.append(new_bone)
@@ -630,9 +765,9 @@ class SkmFile(object):
 
 def main():
     skm_data = SkmFile()
-    filepath = r"D:\Blender-ToEE-Import-Export\PC_Human_Male\PC_Human_Male.ska"
+    filepath = 'D:/GOG Games/ToEECo8/data/art/meshes/Monsters/Giants/Hill_Giants/Hill_Giant_2/Zomb_giant_2.SKA'
     ska_filepath = filepath
-    skm_filepath = ska_filepath.split('.ska')[0] + '.skm'
+    skm_filepath = ska_filepath.split('.SKA')[0] + '.SKM'
 
     # read SKM file
     file = open(skm_filepath, 'rb')
