@@ -175,6 +175,8 @@ def blender_to_skm(mesh, rig, WRITE_MDF):
                 bone_wt = vg.weight
                 skm_data.vertex_data[vidx].attachment_bones.append(bone_id)
                 skm_data.vertex_data[vidx].attachment_weights.append(bone_wt)
+            if skm_data.vertex_data[vidx].attachment_count > 6:
+                raise Exception(f"Too many bone attachments for vertex {vidx}! Max is 6")
         
         return
     
@@ -303,7 +305,7 @@ def _write(context, filepath,
     #             data = None
 
     #         if data:
-    #             matrix = global_matrix * mat
+    #             matrix = global_matrix @ mat
     #             data.transform(matrix)
     #             # todo
     #     if free:

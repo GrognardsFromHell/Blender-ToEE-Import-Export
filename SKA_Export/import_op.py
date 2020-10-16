@@ -64,7 +64,7 @@ class ImportSKA(bpy.types.Operator, ImportHelper):
     apply_animations: BoolProperty(
             name="Apply Animations",
             description="Ignores all keyframes (only uses the stuff in SKA bone)",
-            default=False,
+            default=True,
             )
     def execute(self, context):
         from . import import_ska

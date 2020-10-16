@@ -15,12 +15,11 @@ bl_info = {
     "name" : "SKA Importer/Exporter",
     "author" : "Cattletech & Pugmeister",
     "description" : "",
-    "blender" : (2, 9, 0),
+    "blender" : (2, 90, 0),
     "version" : (0, 0, 1),
-    "location" : "File > Import-Export",
+    "location" : "",
     "warning" : "",
-    "support": 'UNOFFICIAL',
-    "category" : "Import-Export",
+    "category" : "Generic"
 }
 
 from . import auto_load

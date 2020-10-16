@@ -212,7 +212,7 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
                 bone.parent = barm.edit_bones[bd.parent_id]
 
             bone.head = Vector([0, 0, 0])
-            bone.tail = Vector([0, 0, 1])
+            bone.tail = Vector([0, 0, 5])
             bone.matrix = world
 
             print("****************************************************************************", file=fh)
@@ -302,16 +302,18 @@ class RestBoneState:
         self.sca = sca
 
     def get_rel_rot(self, rot):
-        return self.rot.inverted() * rot
+        return self.rot.inverted() @ rot
 
     def get_rel_loc(self, loc):
         return loc - self.loc
 
     def apply_to_posebone(self, posebone, loc=None, rot=None, sca=None):
+        
         if rot is not None:
             posebone.rotation_quaternion = self.get_rel_rot(rot)
         if loc is not None:
             posebone.location = self.get_rel_loc(loc)
+        
 
 
 def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, USE_LOCAL_LOCATION,
@@ -363,15 +365,15 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
         skm_bone = skm_data.bone_data[skm_bone_id]
         rest_world = skm_bone.world_inverse_matrix.inverted()
         if skm_bone.parent_id != -1:
-            rest_world = skm_data.bone_data[skm_bone.parent_id].world_inverse_matrix * rest_world
+            rest_world = skm_data.bone_data[skm_bone.parent_id].world_inverse_matrix @ rest_world
         rest_loc, rest_rot, rest_sca = rest_world.decompose()
         bone_rest_state[ska_bone_id] = RestBoneState(rest_loc, rest_rot, rest_sca)
 
     anim_count = len(ska_data.animation_data)
-    # anim_count = 1  # DEBUG
+    anim_count = 10  # DEBUG
     rig.animation_data_create()
     bpy.ops.object.mode_set(mode='POSE')
-
+    
     for ska_idx, ska_bd in enumerate(ska_data.bone_data):
         skm_bone_id = ska_to_skm_bone_mapping[ska_idx]
         if skm_bone_id == -1:
@@ -383,6 +385,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
         # posebone.scale = ska_bd.scale
         rest_state.apply_to_posebone(posebone, loc=ska_bd.translation, rot=ska_bd.rotation)
+    # return # debug
+    
     progress.enter_substeps(anim_count, "Generating animation F-Curves (%d)..." % anim_count)
     for i in range(0, anim_count):
         progress.step(i)
@@ -397,9 +401,6 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
             continue
         stream_count = 1  # TODO more than one stream (never happens as far as I've seen?)
 
-        if not APPLY_ANIMATIONS:
-            continue
-
         # Group FCurves by the bone they affect
         curve_groups = dict()
 
@@ -410,6 +411,9 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
             group = action.groups.new(bone_name)
             curve_groups[bone_idx] = group
             return group.name
+
+        if not APPLY_ANIMATIONS:
+            continue
 
         for j in range(0, stream_count):
             stream = ad.streams[j]  # type: SkaAnimStream
@@ -567,13 +571,13 @@ def load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
                 if True: # ob.parent is None:
                     ob.matrix_world = global_matrix
                 else:
-                    ob.parent.matrix_world = ob.parent.matrix_world * global_matrix 
+                    ob.parent.matrix_world = ob.parent.matrix_world @ global_matrix 
 
-    if APPLY_MATRIX:
-        for ob in importedObjects:
-            if ob.type == 'MESH':
-                me = ob.data
-                me.transform(ob.matrix_local.inverted())
+        # if True:
+        #     for ob in importedObjects:
+        #         if ob.type == 'MESH':
+        #             me = ob.data
+        #             me.transform(ob.matrix_local.inverted())
 
         for ob in importedObjects:
             ob.select_set(True)
@@ -586,65 +590,10 @@ def load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
         # fixme, make unglobal
         object_dictionary.clear()
         object_matrix.clear()
-
-        # Done DUMMYVERT
-        """
-        if IMPORT_AS_INSTANCE:
-            name = filepath.split('\\')[-1].split('/')[-1]
-            # Create a group for this import.
-            group_scn = Scene.New(name)
-            for ob in importedObjects:
-                group_scn.link(ob) # dont worry about the layers
-
-            grp = Blender.Group.New(name)
-            grp.objects = importedObjects
-
-            grp_ob = Object.New('Empty', name)
-            grp_ob.enableDupGroup = True
-            grp_ob.DupGroup = grp
-            scn.link(grp_ob)
-            grp_ob.Layers = Layers
-            grp_ob.sel = 1
-        else:
-            # Select all imported objects.
-            for ob in importedObjects:
-                scn.link(ob)
-                ob.Layers = Layers
-                ob.sel = 1
-        """
         
         view_layer = context.view_layer
         view_layer.update()
         
-
-        axis_min = [1000000000] * 3
-        axis_max = [-1000000000] * 3
-        global_clamp_size = IMPORT_CONSTRAIN_BOUNDS
-        if global_clamp_size != 0.0:
-            # Get all object bounds
-            for ob in importedObjects:
-                for v in ob.bound_box:
-                    for axis, value in enumerate(v):
-                        if axis_min[axis] > value:
-                            axis_min[axis] = value
-                        if axis_max[axis] < value:
-                            axis_max[axis] = value
-
-            # Scale objects
-            max_axis = max(axis_max[0] - axis_min[0],
-                        axis_max[1] - axis_min[1],
-                        axis_max[2] - axis_min[2])
-            scale = 1.0
-
-            while global_clamp_size < max_axis * scale:
-                scale = scale / 10.0
-
-            scale_mat = mathutils.Matrix.Scale(scale, 4)
-
-            for obj in importedObjects:
-                if obj.parent is None:
-                    obj.matrix_world = scale_mat * obj.matrix_world
-
     # Select all new objects.
     print(" done in %.4f sec." % (time.clock() - time1))
 
