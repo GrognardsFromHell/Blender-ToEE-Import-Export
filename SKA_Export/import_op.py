@@ -78,7 +78,45 @@ class ImportSKA(bpy.types.Operator, ImportHelper):
                                         from_up=self.axis_up,
                                         ).to_4x4()
         keywords["global_matrix"] = global_matrix
-        result = import_ska.load(self, context, **keywords)
+        result = import_ska.blender_load_ska(self, context, **keywords)
+        print("Done.")
+        return result
+    def draw(self, context):
+        pass
+
+
+@orientation_helper(axis_forward='Y', axis_up='Z')
+class ImportSKM(bpy.types.Operator, ImportHelper):
+    """Import from ToEE's Skeletal Animation Mesh file format (.skm)"""
+    bl_idname = "import.skm_file"
+    bl_label = 'Import SKM Data'
+    bl_options = {'REGISTER','UNDO'}
+
+    filename_ext = ".skm"
+    filter_glob: StringProperty(
+            default="*.skm",
+            options={'HIDDEN'},
+            )
+
+    use_image_search: BoolProperty(
+            name="Image Search",
+            description="Search subdirectories for any associated images "
+                        "(Warning, may be slow)",
+            default=True,
+            )
+    def execute(self, context):
+        from . import import_ska
+
+        keywords = self.as_keywords(ignore=("axis_forward",
+                                            "axis_up",
+                                            "filter_glob",
+                                            ))
+
+        global_matrix = axis_conversion(from_forward=self.axis_forward,
+                                        from_up=self.axis_up,
+                                        ).to_4x4()
+        keywords["global_matrix"] = global_matrix
+        result = import_ska.blender_load_skm(self, context, **keywords)
         print("Done.")
         return result
     def draw(self, context):
@@ -134,13 +172,18 @@ class SKA_PT_import_options(bpy.types.Panel):
         layout.prop(operator, "axis_up")
 
 
-def menu_func_import(self, context):
-    self.layout.operator(ImportSKA.bl_idname, text="ToEE animation (.SKA)")
+def menu_func_import_ska(self, context):
+    self.layout.operator(ImportSKA.bl_idname, text="ToEE animation (.SKA + .SKM)")
+
+def menu_func_import_skm(self, context):
+    self.layout.operator(ImportSKM.bl_idname, text="ToEE mesh (.SKM)")
 
 def register():
 #     print('Registering GITHUB/SKA_Import/import_op.py')
-    bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_import_ska)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_import_skm)
 
 def unregister():
 #     print('Unregistering GITHUB/SKA_Import/import_op.py!')
-    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_ska)
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_skm)

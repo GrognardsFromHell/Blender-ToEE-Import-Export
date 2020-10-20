@@ -231,8 +231,29 @@ def blender_to_skm(mesh, rig, WRITE_MDF):
 
 
 
+def _write_skm(context, filepath, 
+    EXPORT_ANIMATION = False,
+    WRITE_MDF = False,
+    global_matrix = None):
+    global progress    
 
-def _write(context, filepath, 
+    with ProgressReport(context.window_manager) as progress:
+        # Exit edit mode before exporting, so current object states are exported properly.
+        if bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        mesh = bpy.context.scene.objects['ToEE Model']
+        rig = bpy.context.scene.objects['ToEE Rig']
+        skm_data = blender_to_skm(mesh, rig, WRITE_MDF)
+        
+        
+        skm_filepath = os.path.splitext(filepath)[0] + '.skm'
+        with open(skm_filepath, 'wb') as skm_file:
+            skm_data.write(skm_file)
+    return
+
+
+def _write_ska(context, filepath, 
     EXPORT_ANIMATION = False,
     WRITE_MDF = False,
     global_matrix = None):
@@ -325,6 +346,10 @@ def _write(context, filepath,
     print("SKA export time: %.2f" % (time.clock() - time1))
     return
 
-def save(operator, context, filepath="", use_selection=True, global_matrix=None,):
-    _write(context, filepath)
+def blender_save_ska(operator, context, filepath="", use_selection=True, global_matrix=None,):
+    _write_ska(context, filepath)
+    return {'FINISHED'}
+
+def blender_save_skm(operator, context, filepath="", use_selection=True, global_matrix=None,):
+    _write_skm(context, filepath)
     return {'FINISHED'}

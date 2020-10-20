@@ -344,7 +344,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
         for ska_idx, ska_bd in enumerate(ska_data.bone_data):
             found = False
             for skm_idx, skm_bd in enumerate(skm_data.bone_data):
-                if str(ska_bd.name) == str(skm_bd.name):
+                if str(ska_bd.name).lower() == str(skm_bd.name).lower():
                     ska_to_skm_bone_mapping[ska_idx] = skm_idx
                     found = True
                     break
@@ -353,7 +353,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                 ska_to_skm_bone_mapping[ska_idx] = 0
             elif not found:
                 ska_to_skm_bone_mapping[ska_idx] = -1
-                print("Could not find mapping of SKA bone id %d!" % ska_idx)
+                print("Could not find mapping of SKA bone id %d!" % ska_idx, ska_data.bone_data[ska_idx].name)
         return ska_to_skm_bone_mapping
 
     dump_bones()
@@ -363,8 +363,14 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
     bone_rest_state = dict()
     for ska_bone_id, skm_bone_id in ska_to_skm_bone_mapping.items():
         skm_bone = skm_data.bone_data[skm_bone_id]
+        ska_bone = ska_data.bone_data[ska_bone_id]
+        
         rest_world = skm_bone.world_inverse_matrix.inverted()
-        if skm_bone.parent_id != -1:
+        if ska_bone.parent_id == -1:
+            # rest_world = skm_data.bone_data[0].world_inverse_matrix @ rest_world
+            # rest_world = skm_data.bone_data[0].world_inverse_matrix
+            pass
+        elif ska_bone.parent_id != -1:
             rest_world = skm_data.bone_data[skm_bone.parent_id].world_inverse_matrix @ rest_world
         rest_loc, rest_rot, rest_sca = rest_world.decompose()
         bone_rest_state[ska_bone_id] = RestBoneState(rest_loc, rest_rot, rest_sca)
@@ -383,7 +389,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
         rest_state = bone_rest_state[ska_idx]
 
-        # posebone.scale = ska_bd.scale
+        posebone.scale = ska_bd.scale
         rest_state.apply_to_posebone(posebone, loc=ska_bd.translation, rot=ska_bd.rotation)
     # return # debug
     
@@ -393,9 +399,10 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
         ad = ska_data.animation_data[i]
         anim_header = ad.header
         action_name = str(anim_header.name)
+        print(action_name)
         action = bpy.data.actions.new(action_name)
         action.use_fake_user = True
-        #rig.animation_data.action = action
+        rig.animation_data.action = action
         stream_count = anim_header.stream_count
         if stream_count <= 0:
             continue
@@ -424,7 +431,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
             for bone_idx, keyframes in stream.rotation_channels.items():
                 skm_bone_idx = ska_to_skm_bone_mapping[bone_idx]
                 # print("Skm bone idx: %d" % skm_bone_idx)
-                rest_pose = bone_rest_state[skm_bone_idx]
+                # rest_pose = bone_rest_state[skm_bone_idx]
+                rest_pose = bone_rest_state[bone_idx]
 
                 posebone = rig.pose.bones[skm_bone_idx]
                 prop = posebone.path_from_id("rotation_quaternion")
@@ -436,6 +444,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                 for frame, rotation in keyframes:
                     # Transform rotation to be relative to rest pose
                     rotation = rest_pose.get_rel_rot(rotation)
+                    if rotation[0] < 0: # fixes quaternion interpolation issues
+                        rotation = -rotation
 
                     kf = curve_w.keyframe_points.insert(1 + frame, rotation.w, options={'FAST'})
                     kf.interpolation = 'LINEAR'
@@ -453,7 +463,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
             for bone_idx, keyframes in stream.location_channels.items():
                 skm_bone_idx = ska_to_skm_bone_mapping[bone_idx]
-                rest_pose = bone_rest_state[skm_bone_idx]
+                # rest_pose = bone_rest_state[skm_bone_idx]
+                rest_pose = bone_rest_state[bone_idx]
 
                 posebone = rig.pose.bones[skm_bone_idx]
                 prop = posebone.path_from_id("location")
@@ -497,7 +508,57 @@ def get_skm_filepath(ska_filepath):
     return skm_filepath
 
 
-def load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
+def load_skm(filepath, context, IMAGE_SEARCH=True):
+    global SCN, ToEE_data_dir, progress
+    time1 = time.clock()  # for timing the import duration
+    with ProgressReport(context.window_manager) as progress:
+
+        print("importing SKA: %r..." % (filepath), end="")
+        # filepath = 'D:/GOG Games/ToEECo8/data/art/meshes/Monsters/Giants/Hill_Giants/Hill_Giant_2/Zomb_giant_2.SKA'
+        skm_filepath = filepath
+
+        if bpy.ops.object.select_all.poll():
+            bpy.ops.object.select_all(action='DESELECT')
+
+        ToEE_data_dir = get_ToEE_data_dir(filepath)
+        print("Data dir: %s", ToEE_data_dir)
+
+        # Read data into intermediate SkmFile and SkaFile objects
+        skm_data = SkmFile()
+
+        # SKM file
+        progress.enter_substeps(1, "Reading SKM File %r..." %skm_filepath)
+        with open(skm_filepath, 'rb') as file:
+            print('Opened file: ', skm_filepath)
+            skm_data.read(file)
+
+        # fixme, make unglobal, clear in case
+        object_dictionary.clear()
+        object_matrix.clear()
+
+        scn = context.scene
+        SCN = scn
+        
+        importedObjects = []  # Fill this list with objects
+        progress.enter_substeps(3, "Converting SKM to Blender model...")
+        skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH)
+        
+        # In Blender 2.80 API new objects mast be linked not to the scene, but to the scene collections:
+        view_layer = context.view_layer
+        view_layer.update()
+
+        for ob in importedObjects:
+            ob.select_set(True)
+        
+        # fixme, make unglobal
+        object_dictionary.clear()
+        object_matrix.clear()
+        
+    print(" done in %.4f sec." % (time.clock() - time1))
+    return
+
+
+def load_ska_and_skm(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
              IMAGE_SEARCH=True,
              APPLY_MATRIX=True,
              USE_INHERIT_ROTATION=True,
@@ -540,11 +601,6 @@ def load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
             print('Opened file: ', ska_filepath)
             if APPLY_ANIMATIONS:
                 ska_data.read(file)
-
-        if IMPORT_CONSTRAIN_BOUNDS:
-            BOUNDS_SKA[:] = [1 << 30, 1 << 30, 1 << 30, -1 << 30, -1 << 30, -1 << 30]
-        else:
-            del BOUNDS_SKA[:]
 
         # fixme, make unglobal, clear in case
         object_dictionary.clear()
@@ -598,7 +654,7 @@ def load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
     print(" done in %.4f sec." % (time.clock() - time1))
 
 
-def load(operator, context, filepath="",
+def blender_load_ska(operator, context, filepath="",
          constrain_size=0.0,
          use_image_search=True,
          use_apply_transform=True,
@@ -607,7 +663,7 @@ def load(operator, context, filepath="",
          apply_animations=True,
          global_matrix=None,
          ):
-    load_ska(filepath, context, IMPORT_CONSTRAIN_BOUNDS=constrain_size,
+    load_ska_and_skm(filepath, context, IMPORT_CONSTRAIN_BOUNDS=constrain_size,
              IMAGE_SEARCH=use_image_search,
              APPLY_MATRIX=use_apply_transform,
              USE_INHERIT_ROTATION=use_inherit_rot,
@@ -616,4 +672,16 @@ def load(operator, context, filepath="",
              global_matrix=global_matrix,
              )
 
+    return {'FINISHED'}
+
+def blender_load_skm(operator, context, filepath="",
+         constrain_size=0.0,
+         use_image_search=True,
+         use_apply_transform=True,
+         use_inherit_rot=True,
+         use_local_location=True,
+         apply_animations=True,
+         global_matrix=None,
+         ):
+    load_skm(filepath, context, IMAGE_SEARCH=use_image_search)
     return {'FINISHED'}

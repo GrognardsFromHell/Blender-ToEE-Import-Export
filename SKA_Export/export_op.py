@@ -67,18 +67,68 @@ class SkaExport(bpy.types.Operator, ExportHelper):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
+@orientation_helper(axis_forward='Y', axis_up='Z')
+class SkmExport(bpy.types.Operator, ExportHelper):
+    """Export animation to ToEE's SKM (Skeletal Model) format"""
+    bl_idname = "export.skm_file"
+    bl_label = "Export SKM Data"
 
-def menu_func_export(self, context):
-    self.layout.operator(SkaExport.bl_idname, text="ToEE animation (.SKA)")
+    filename_ext = ".skm"
+    filter_glob: StringProperty(
+            default="*.skm",
+            options={'HIDDEN'},
+            )
+            
+    use_selection: BoolProperty(
+            name="Selection Only",
+            description="Export selected objects only",
+            default=False,
+            )
+    
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
+
+    def execute(self, context):
+    
+        from . import export_ska
+        
+        keywords = self.as_keywords(ignore=("axis_forward",
+                                            "axis_up",
+                                            "filter_glob",
+                                            "check_existing",
+                                            ))
+        global_matrix = axis_conversion(to_forward=self.axis_forward,
+                                        to_up=self.axis_up,
+                                        ).to_4x4()
+        keywords["global_matrix"] = global_matrix
+
+        return export_ska.blender_save_skm(self, context, **keywords)
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+
+
+def menu_func_export_ska(self, context):
+    self.layout.operator(SkaExport.bl_idname, text="ToEE animation (.SKA + .SKM)")
+
+def menu_func_export_skm(self, context):
+    self.layout.operator(SkmExport.bl_idname, text="ToEE model (.SKM)")
 
 
 def register():
     # print('Registering GITHUB/SKA_Import/export_op.py')
     # Register and add to the file selector
-    bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
+    bpy.types.TOPBAR_MT_file_export.append(menu_func_export_ska)
+    bpy.types.TOPBAR_MT_file_export.append(menu_func_export_skm)
 
 
 
 def unregister():
     # print('Unregistering GITHUB/SKA_Import/export_op.py!')
-    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export_ska)
+    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export_skm)

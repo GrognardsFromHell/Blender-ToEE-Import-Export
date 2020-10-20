@@ -50,6 +50,12 @@ class FixedLengthName(object):
 
 class SkaBone(object):
     __slots__ = "flags", "parent_id", "name", "scale", "rotation", "translation"
+    flags: int
+    parent_id: int
+    name: FixedLengthName
+    scale: mathutils.Vector
+    rotation: mathutils.Vector
+    translation: mathutils.Vector
 
     def __init__(self, Name="", Parent_id=0):
         self.flags = 0
@@ -409,7 +415,7 @@ class SkaAnimHeader(object):
 
 class SkaAnim(object):
     __slots__ = "header", "events", "streams"
-
+    header: SkaAnimHeader
     def __init__(self):
         self.header = SkaAnimHeader()
         self.events = []
@@ -424,7 +430,7 @@ class SkaAnim(object):
 
 class SkaFile:
     streams = ...  # type: List[SkaAnimStream]
-
+    bone_data: List[SkaBone]
     def __init__(self):
         self.bone_data = []
         self.variation_data = []
