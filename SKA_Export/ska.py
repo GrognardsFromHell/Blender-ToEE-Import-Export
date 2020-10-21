@@ -3,8 +3,6 @@ import time
 from io import BytesIO
 from typing import List
 
-import mathutils
-from mathutils import Vector, Quaternion
 
 def write_short(file, data):
     file.write( struct.pack("<h", data))
@@ -53,14 +51,20 @@ class SkaBone(object):
     flags: int
     parent_id: int
     name: FixedLengthName
-    scale: mathutils.Vector
-    rotation: mathutils.Vector
-    translation: mathutils.Vector
+    scale: List[float]
+    rotation: List[float]
+    translation: List[float]
 
     def __init__(self, Name="", Parent_id=0):
         self.flags = 0
         self.parent_id = Parent_id
         self.name = FixedLengthName(Name, 40)
+
+    @property
+    def rotation_quaternion(self):
+        if self.rotation and len(self.rotation) == 4:
+            return [self.rotation[3], self.rotation[0], self.rotation[1], self.rotation[2]]
+        return None
 
     def from_raw_data(self, rawdata):
         self.flags = struct.unpack('<h', rawdata[0:2])[0]
@@ -72,11 +76,11 @@ class SkaBone(object):
         if field30 != 0 or field2c != 0:
             print('interesting! field2c = ', field2c)
         scale = struct.unpack('<4f', rawdata[52:52 + 16])
-        self.scale = mathutils.Vector(scale[0:3])
+        self.scale = scale[0:3]
         rotation = struct.unpack('<4f', rawdata[52 + 16:52 + 32])
-        self.rotation = mathutils.Quaternion([rotation[3], rotation[0], rotation[1], rotation[2]])
+        self.rotation = rotation
         translation = struct.unpack('<4f', rawdata[52 + 32:52 + 48])
-        self.translation = mathutils.Vector(translation[0:3])
+        self.translation = translation[0:3]
 
     def write(self, file):
         write_short(file, self.flags) 
@@ -103,7 +107,8 @@ class SkmBone:
 
     @property
     def world_inverse_matrix(self):
-        return mathutils.Matrix(self.world_inverse + [[0, 0, 0, 1]])
+        # return mathutils.Matrix(self.world_inverse + [[0, 0, 0, 1]])
+        return self.world_inverse + [[0, 0, 0, 1]]
 
     def from_raw_data(self, rawdata):
         self.flags = struct.unpack('<h', rawdata[0:2])[0]
@@ -186,9 +191,9 @@ class SkaAnimKeyframeBoneData(object):
         self.scale_next_frame = -1
         self.rotation_next_frame = -1
         self.translation_next_frame = -1
-        self.scale = mathutils.Vector([1, 1, 1])
-        self.rotation = mathutils.Quaternion()  # X,Y,Z, scalar
-        self.translation = mathutils.Vector([0, 0, 0])
+        self.scale = [1, 1, 1]
+        self.rotation = [0.0,0,0.0, 1.0]  # X,Y,Z, scalar
+        self.translation = [0, 0, 0]
 
     def has_scale_data(self):
         if self.frame < 0:
@@ -289,28 +294,28 @@ class SkaAnimStream:
 
         def next_scale():
             (x, y, z) = struct.unpack("<hhh", data.read(3 * 2))
-            return Vector([
+            return [
                 x * scale_factor,
                 y * scale_factor,
                 z * scale_factor
-            ])
+            ]
 
         def next_rotation():
             (x, y, z, w) = struct.unpack("<hhhh", data.read(4 * 2))
-            return Quaternion([
+            return [
                 w * rotation_factor,
                 x * rotation_factor,
                 y * rotation_factor,
                 z * rotation_factor
-            ])
+            ]
 
         def next_location():
             (x, y, z) = struct.unpack("<hhh", data.read(3 * 2))
-            return Vector([
+            return [
                 x * location_factor,
                 y * location_factor,
                 z * location_factor
-            ])
+            ]
 
         # Read frame 0 for all affected bones
         bone_idx = next_short()
@@ -770,10 +775,12 @@ class SkmFile(object):
 
 
 def main():
+    import os
     skm_data = SkmFile()
     filepath = 'D:/GOG Games/ToEECo8/data/art/meshes/Monsters/Giants/Hill_Giants/Hill_Giant_2/Zomb_giant_2.SKA'
+    filepath = r'D:\GOG Games\Vanilla Files\art\meshes\Monsters\Icelizard\icelizard.SKA'
     ska_filepath = filepath
-    skm_filepath = ska_filepath.split('.SKA')[0] + '.SKM'
+    skm_filepath = os.path.splitext(ska_filepath)[0] + '.SKM'
 
     # read SKM file
     file = open(skm_filepath, 'rb')

@@ -4,14 +4,13 @@ import time
 
 import bpy
 import mathutils
-from mathutils import Vector
+from mathutils import Vector, Quaternion
 
 from SKA_Export.ska import SkaAnimStream
 from .ska import SkmFile, SkaFile, MdfFile
 from bpy_extras.wm_utils.progress_report import ProgressReport
 from bpy_extras import node_shader_utils
 
-BOUNDS_SKA = []
 global scn
 scn = None
 progress = None
@@ -206,7 +205,7 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
             bone = barm.edit_bones.new(bone_name)  # type: bpy.types.EditBone
             bone.select = True
 
-            wi = bd.world_inverse_matrix
+            wi = mathutils.Matrix(bd.world_inverse_matrix)
             world = wi.inverted_safe()
             if bd.parent_id != -1:
                 bone.parent = barm.edit_bones[bd.parent_id]
@@ -365,13 +364,13 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
         skm_bone = skm_data.bone_data[skm_bone_id]
         ska_bone = ska_data.bone_data[ska_bone_id]
         
-        rest_world = skm_bone.world_inverse_matrix.inverted()
+        rest_world = mathutils.Matrix(skm_bone.world_inverse_matrix).inverted()
         if ska_bone.parent_id == -1:
-            # rest_world = skm_data.bone_data[0].world_inverse_matrix @ rest_world
-            # rest_world = skm_data.bone_data[0].world_inverse_matrix
+            # rest_world = mathutils.Matrix(skm_data.bone_data[0].world_inverse_matrix) @ rest_world
+            # rest_world = mathutils.Matrix(skm_data.bone_data[0].world_inverse_matrix)
             pass
         elif ska_bone.parent_id != -1:
-            rest_world = skm_data.bone_data[skm_bone.parent_id].world_inverse_matrix @ rest_world
+            rest_world = mathutils.Matrix(skm_data.bone_data[skm_bone.parent_id].world_inverse_matrix) @ rest_world
         rest_loc, rest_rot, rest_sca = rest_world.decompose()
         bone_rest_state[ska_bone_id] = RestBoneState(rest_loc, rest_rot, rest_sca)
 
@@ -389,8 +388,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
         rest_state = bone_rest_state[ska_idx]
 
-        posebone.scale = ska_bd.scale
-        rest_state.apply_to_posebone(posebone, loc=ska_bd.translation, rot=ska_bd.rotation)
+        posebone.scale = mathutils.Vector(ska_bd.scale)
+        rest_state.apply_to_posebone(posebone, loc=Vector(ska_bd.translation), rot=Quaternion(ska_bd.rotation_quaternion) )
     # return # debug
     
     progress.enter_substeps(anim_count, "Generating animation F-Curves (%d)..." % anim_count)
@@ -430,6 +429,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
             for bone_idx, keyframes in stream.rotation_channels.items():
                 skm_bone_idx = ska_to_skm_bone_mapping[bone_idx]
+                skm_bone = skm_data.bone_data[skm_bone_idx]
                 # print("Skm bone idx: %d" % skm_bone_idx)
                 # rest_pose = bone_rest_state[skm_bone_idx]
                 rest_pose = bone_rest_state[bone_idx]
@@ -443,6 +443,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                 curve_z = action.fcurves.new(prop, index=3, action_group=group)
                 for frame, rotation in keyframes:
                     # Transform rotation to be relative to rest pose
+                    # if skm_bone.parent_id != -1:
+                    rotation = Quaternion(rotation)
                     rotation = rest_pose.get_rel_rot(rotation)
                     if rotation[0] < 0: # fixes quaternion interpolation issues
                         rotation = -rotation
@@ -463,6 +465,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
             for bone_idx, keyframes in stream.location_channels.items():
                 skm_bone_idx = ska_to_skm_bone_mapping[bone_idx]
+                skm_bone = skm_data.bone_data[skm_bone_idx]
                 # rest_pose = bone_rest_state[skm_bone_idx]
                 rest_pose = bone_rest_state[bone_idx]
 
@@ -474,6 +477,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                 curve_z = action.fcurves.new(prop, index=2, action_group=group)
                 for frame, location in keyframes:
                     # Transform location to be relative to rest pose
+                    # if skm_bone.parent_id != -1:
+                    location = Vector(location)
                     location = rest_pose.get_rel_loc(location)
 
                     kf = curve_x.keyframe_points.insert(1 + frame, location.x, options={'FAST'})
