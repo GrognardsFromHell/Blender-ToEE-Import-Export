@@ -319,6 +319,9 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                    APPLY_ANIMATIONS):
     print("Importing animations")
     contextObName = "ToEE Model"
+    ska_rig_name = "SKA Rig"
+    ska_armature_name = "SKA Armature"
+
     ob = object_dictionary[contextObName]
     rig = ob.parent
     barm = rig.data
@@ -338,25 +341,9 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
             bone_dump.write("\n")
         bone_dump.close()
 
-    def get_ska_to_skm_bone_map():
-        ska_to_skm_bone_mapping = {}  # in some ToEE models not all SKA bones are present in SKM (clothshit? buggy exporter?)
-        for ska_idx, ska_bd in enumerate(ska_data.bone_data):
-            found = False
-            for skm_idx, skm_bd in enumerate(skm_data.bone_data):
-                if str(ska_bd.name).lower() == str(skm_bd.name).lower():
-                    ska_to_skm_bone_mapping[ska_idx] = skm_idx
-                    found = True
-                    break
-            if not found and ska_idx == 0:
-                print("Could not find mapping of SKA bone 0 by name; will assume its matching SKM bone id is also 0.")
-                ska_to_skm_bone_mapping[ska_idx] = 0
-            elif not found:
-                ska_to_skm_bone_mapping[ska_idx] = -1
-                print("Could not find mapping of SKA bone id %d!" % ska_idx, ska_data.bone_data[ska_idx].name)
-        return ska_to_skm_bone_mapping
-
+    
     dump_bones()
-    ska_to_skm_bone_mapping = get_ska_to_skm_bone_map()
+    ska_to_skm_bone_mapping = ska_data.get_ska_to_skm_bone_map(skm_data)
 
     # State (loc, rot, sca) for each of the bones in rest position, relative to parent
     bone_rest_state = dict()
@@ -378,10 +365,12 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
     anim_count = 10  # DEBUG
     rig.animation_data_create()
     bpy.ops.object.mode_set(mode='POSE')
+    bpy.ops.poselib.pose_add(frame=0, name = 'T Pose')
     
     for ska_idx, ska_bd in enumerate(ska_data.bone_data):
         skm_bone_id = ska_to_skm_bone_mapping[ska_idx]
         if skm_bone_id == -1:
+            print(f'SKA bone {ska_idx} not present in SKM')
             continue  # Skip bone not present in SKM
 
         posebone = rig.pose.bones[skm_bone_id]
@@ -390,7 +379,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
 
         posebone.scale = mathutils.Vector(ska_bd.scale)
         rest_state.apply_to_posebone(posebone, loc=Vector(ska_bd.translation), rot=Quaternion(ska_bd.rotation_quaternion) )
-    # return # debug
+    
+    bpy.ops.poselib.pose_add(frame=1, name = 'Rest Pose')
     
     progress.enter_substeps(anim_count, "Generating animation F-Curves (%d)..." % anim_count)
     for i in range(0, anim_count):
@@ -425,6 +415,9 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
             stream = ad.streams[j]  # type: SkaAnimStream
 
             for bone_idx, keyframes in stream.scale_channels.items():
+                for frame, scaling in keyframes:
+                    if scaling[0] < 1.0 or scaling[0] > 1.05:
+                        print('Non-unity scaling:', bone_idx, ska_data.bone_data[bone_idx].name,frame, scaling)
                 pass
 
             for bone_idx, keyframes in stream.rotation_channels.items():
@@ -480,7 +473,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                     # if skm_bone.parent_id != -1:
                     location = Vector(location)
                     location = rest_pose.get_rel_loc(location)
-
+                    
                     kf = curve_x.keyframe_points.insert(1 + frame, location.x, options={'FAST'})
                     kf.interpolation = 'LINEAR'
                     kf = curve_y.keyframe_points.insert(1 + frame, location.y, options={'FAST'})

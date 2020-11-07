@@ -46,57 +46,57 @@ class FixedLengthName(object):
         return str(self.name)
 
 
-class SkaBone(object):
-    __slots__ = "flags", "parent_id", "name", "scale", "rotation", "translation"
-    flags: int
-    parent_id: int
-    name: FixedLengthName
-    scale: List[float]
-    rotation: List[float]
-    translation: List[float]
+########## SKM structs
+class SkmVertex(object):
+    __slots__ = "pos", "normal", "uv", "attachment_bones", "attachment_weights"
+    pos: List[float]
+    normal: List[float]
+    uv: List[float]
+    attachment_bones: List[int]
+    attachment_weights: List[float]
 
-    def __init__(self, Name="", Parent_id=0):
-        self.flags = 0
-        self.parent_id = Parent_id
-        self.name = FixedLengthName(Name, 40)
+    def __init__(self):
+        self.pos = []
+        self.normal = []
+        self.uv = []
+        self.attachment_bones = []
+        self.attachment_weights = []
 
     @property
-    def rotation_quaternion(self):
-        if self.rotation and len(self.rotation) == 4:
-            return [self.rotation[3], self.rotation[0], self.rotation[1], self.rotation[2]]
-        return None
+    def attachment_count(self):
+        return len(self.attachment_bones)
 
     def from_raw_data(self, rawdata):
-        self.flags = struct.unpack('<h', rawdata[0:2])[0]
-        self.parent_id = struct.unpack('<h', rawdata[2:4])[0]
-        self.name.from_raw_data(rawdata[4:44])
-        # print(self.name.name)
-        field2c = struct.unpack('<i', rawdata[44:48])[0]
-        field30 = struct.unpack('<i', rawdata[48:52])[0]
-        if field30 != 0 or field2c != 0:
-            print('interesting! field2c = ', field2c)
-        scale = struct.unpack('<4f', rawdata[52:52 + 16])
-        self.scale = scale[0:3]
-        rotation = struct.unpack('<4f', rawdata[52 + 16:52 + 32])
-        self.rotation = rotation
-        translation = struct.unpack('<4f', rawdata[52 + 32:52 + 48])
-        self.translation = translation[0:3]
+        self.pos = struct.unpack('<4f', rawdata[0:0 + 16])
+        self.normal = struct.unpack('<4f', rawdata[0 + 16:0 + 32])
+        self.uv = struct.unpack('<2f', rawdata[0 + 32:0 + 40])
+        dummy = struct.unpack('<h', rawdata[40:42])[0]
+        # if dummy != 0:
+            # print('sheeit')
+        attachment_count = struct.unpack('<h', rawdata[42:44])[0]
+        if attachment_count > 6:
+            raise Exception("SkmVertex: Unexcepted number of attachments read!")
+        attachment_count = max(0, min(attachment_count, 6))
+        self.attachment_bones = []
+        self.attachment_bones = struct.unpack("<%dh" % attachment_count, rawdata[44:44 + attachment_count * 2])
+        self.attachment_weights = struct.unpack("<%df" % attachment_count,
+                                                rawdata[44 + 12:44 + 12 + attachment_count * 4])
 
     def write(self, file):
-        write_short(file, self.flags) 
-        write_short(file, self.parent_id)
-        self.name.write(file)
-        self.scale.write(file)
-        self.rotation.write(file)
-        self.translation.write(file)
+        write_float_list(file, self.pos)
+        write_float_list(file, self.normal)
+        write_float_list(file, self.uv)
+        
+        file.write( struct.pack('<h', 0) )
+        file.write( struct.pack('<h', self.attachment_count) )
+
+        write_short_list( file, self.attachment_bones + [0 for _ in range(self.attachment_count, 6)] )
+        write_float_list( file, self.attachment_weights + [0.0 for _ in range(self.attachment_count, 6)] )
+        return
 
     @staticmethod
     def get_size():
-        return 100
-
-    def __str__(self):
-        return self.name.__str__()
-
+        return 80
 
 class SkmBone:
     def __init__(self, Name="", Parent_id=0):
@@ -133,7 +133,6 @@ class SkmBone:
 
     def __str__(self):
         return self.name.__str__()
-
 
 class SkmMaterial(object):
     '''
@@ -180,6 +179,75 @@ class MdfFile(object):
         file.write("\"\n")
         return
     
+class SkmFace(object):
+    __slots__ = "material_id", "vertex_ids"
+    material_id: int
+    vertex_ids: List[int]
+    def from_raw_data(self, rawdata):
+        self.material_id = struct.unpack('<h', rawdata[0:2])[0]
+        self.vertex_ids = struct.unpack('<3h', rawdata[2:8])
+
+    def write(self, file):
+        write_short(file, self.material_id)
+        write_short_list(file, self.vertex_ids)
+        return
+    
+    @staticmethod
+    def get_size():
+        return 8
+
+########## SKA structs
+class SkaBone(object):
+    __slots__ = "flags", "parent_id", "name", "scale", "rotation", "translation"
+    flags: int
+    parent_id: int
+    name: FixedLengthName
+    scale: tuple
+    rotation: tuple
+    translation: tuple
+
+    def __init__(self, Name="", Parent_id=0):
+        self.flags = 0
+        self.parent_id = Parent_id
+        self.name = FixedLengthName(Name, 40)
+
+    @property
+    def rotation_quaternion(self):
+        if self.rotation and len(self.rotation) == 4:
+            return [self.rotation[3], self.rotation[0], self.rotation[1], self.rotation[2]]
+        return None
+
+    def from_raw_data(self, rawdata):
+        self.flags = struct.unpack('<h', rawdata[0:2])[0]
+        self.parent_id = struct.unpack('<h', rawdata[2:4])[0]
+        self.name.from_raw_data(rawdata[4:44])
+        # print(self.name.name)
+        field2c = struct.unpack('<i', rawdata[44:48])[0]
+        field30 = struct.unpack('<i', rawdata[48:52])[0]
+        if field30 != 0 or field2c != 0:
+            print('interesting! field2c = ', field2c)
+        scale = struct.unpack('<4f', rawdata[52:52 + 16])
+        self.scale = scale[0:3]
+        rotation = struct.unpack('<4f', rawdata[52 + 16:52 + 32])
+        self.rotation = rotation
+        translation = struct.unpack('<4f', rawdata[52 + 32:52 + 48])
+        self.translation = translation[0:3]
+
+    def write(self, file):
+        write_short(file, self.flags) 
+        write_short(file, self.parent_id)
+        self.name.write(file)
+        file.write( struct.pack("<2i", 0,0)) # unknown/unused fields 0x2c, 0x30
+        write_float_list(file, self.scale + (0.0,) )
+        write_float_list(file, self.rotation)
+        write_float_list(file, self.translation + (0.0,) )
+
+    @staticmethod
+    def get_size():
+        return 100
+
+    def __str__(self):
+        return self.name.__str__()
 
 class SkaAnimKeyframeBoneData(object):
     __slots__ = "bone_id", "flags", "frame", "scale_next_frame", "scale", "rotation_next_frame", "rotation", "translation_next_frame", "translation"
@@ -220,7 +288,6 @@ class SkaAnimKeyframeBoneData(object):
     def get_size():
         return 22
 
-
 class SkaAnimStreamHeader(object):
     __slots__ = "frame_count", "variation_id", "frame_rate", "dps", "data_offset"
 
@@ -242,7 +309,6 @@ class SkaAnimStreamHeader(object):
     def get_size():
         return 2 + 2 + 4 + 4 + 4
 
-
 class SkaAnimStreamInstance:
     """
     An animation stream which is an actual physical keyframe stream
@@ -255,7 +321,6 @@ class SkaAnimStreamInstance:
         self.name = name
         self.frame_rate = frame_rate
         self.dps = dps
-
 
 class SkaAnimStream:
     def __init__(self, name):
@@ -383,7 +448,6 @@ class SkaEvent(object):
     def get_size():
         return 2 + 48 + 128
 
-
 class SkaAnimHeader(object):
     __slots__ = "name", "drive_type", "loopable", "event_count", "event_offset", "stream_count", "unk", "stream_headers"
 
@@ -417,7 +481,6 @@ class SkaAnimHeader(object):
     def get_size():
         return 64 + 1 + 1 + 2 + 4 + 2 + 2 + 10 * SkaAnimStreamHeader.get_size()
 
-
 class SkaAnim(object):
     __slots__ = "header", "events", "streams"
     header: SkaAnimHeader
@@ -432,7 +495,7 @@ class SkaAnim(object):
     def get_size(self):
         return self.header.get_size() + 2 + 4
 
-
+########
 class SkaFile:
     streams = ...  # type: List[SkaAnimStream]
     bone_data: List[SkaBone]
@@ -537,6 +600,7 @@ class SkaFile:
         variation_data_offset = bone_data_offset + self.get_bone_data_length()
         file.write(struct.pack("<2i", variation_count, variation_data_offset))
         # shouldn't actually have data here, heh
+        assert variation_count == 0, "no variation data expected!"
 
         # animation data
         animation_count = len(self.animation_data)
@@ -558,75 +622,37 @@ class SkaFile:
     def add_bone(self, new_bone):
         self.bone_data.append(new_bone)
 
+    def get_ska_to_skm_bone_map(self, skm_data):
+        ska_data = self
+        ska_to_skm_bone_mapping = {}  # in some ToEE models not all SKA bones are present in SKM (clothshit? buggy exporter?)
 
-class SkmVertex(object):
-    __slots__ = "pos", "normal", "uv", "attachment_bones", "attachment_weights"
-    pos: List[float]
-    normal: List[float]
-    uv: List[float]
-    attachment_bones: List[int]
-    attachment_weights: List[float]
+        for skm_idx, skm_bd in enumerate(skm_data.bone_data):
 
-    def __init__(self):
-        self.pos = []
-        self.normal = []
-        self.uv = []
-        self.attachment_bones = []
-        self.attachment_weights = []
-
-    @property
-    def attachment_count(self):
-        return len(self.attachment_bones)
-
-    def from_raw_data(self, rawdata):
-        self.pos = struct.unpack('<4f', rawdata[0:0 + 16])
-        self.normal = struct.unpack('<4f', rawdata[0 + 16:0 + 32])
-        self.uv = struct.unpack('<2f', rawdata[0 + 32:0 + 40])
-        dummy = struct.unpack('<h', rawdata[40:42])[0]
-        # if dummy != 0:
-            # print('sheeit')
-        attachment_count = struct.unpack('<h', rawdata[42:44])[0]
-        if attachment_count > 6:
-            raise Exception("SkmVertex: Unexcepted number of attachments read!")
-        attachment_count = max(0, min(attachment_count, 6))
-        self.attachment_bones = []
-        self.attachment_bones = struct.unpack("<%dh" % attachment_count, rawdata[44:44 + attachment_count * 2])
-        self.attachment_weights = struct.unpack("<%df" % attachment_count,
-                                                rawdata[44 + 12:44 + 12 + attachment_count * 4])
-
-    def write(self, file):
-        write_float_list(file, self.pos)
-        write_float_list(file, self.normal)
-        write_float_list(file, self.uv)
-        
-        file.write( struct.pack('<h', 0) )
-        file.write( struct.pack('<h', self.attachment_count) )
-
-        write_short_list( file, self.attachment_bones + [0 for _ in range(self.attachment_count, 6)] )
-        write_float_list( file, self.attachment_weights + [0.0 for _ in range(self.attachment_count, 6)] )
-        return
-
-    @staticmethod
-    def get_size():
-        return 80
+            found  = False
+            for ska_idx, ska_bd in enumerate(ska_data.bone_data):
+                if str(ska_bd.name).lower() == str(skm_bd.name).lower():
+                    ska_to_skm_bone_mapping[ska_idx] = skm_idx
+                    found = True
+                    break
+            if not found and skm_bd.parent_id >= 0:
+                print('ho there!')
+                ska_to_skm_bone_mapping[ska_idx]
 
 
-class SkmFace(object):
-    __slots__ = "material_id", "vertex_ids"
-    material_id: int
-    vertex_ids: List[int]
-    def from_raw_data(self, rawdata):
-        self.material_id = struct.unpack('<h', rawdata[0:2])[0]
-        self.vertex_ids = struct.unpack('<3h', rawdata[2:8])
-
-    def write(self, file):
-        write_short(file, self.material_id)
-        write_short_list(file, self.vertex_ids)
-        return
-    
-    @staticmethod
-    def get_size():
-        return 8
+        for ska_idx, ska_bd in enumerate(ska_data.bone_data):
+            found = False
+            for skm_idx, skm_bd in enumerate(skm_data.bone_data):
+                if str(ska_bd.name).lower() == str(skm_bd.name).lower():
+                    ska_to_skm_bone_mapping[ska_idx] = skm_idx
+                    found = True
+                    break
+            if not found and ska_idx == 0:
+                print("Could not find mapping of SKA bone 0 by name; will assume its matching SKM bone id is also 0.")
+                ska_to_skm_bone_mapping[ska_idx] = 0
+            elif not found:
+                ska_to_skm_bone_mapping[ska_idx] = -1
+                print("Could not find mapping of SKA bone id %d!" % ska_idx, ska_data.bone_data[ska_idx].name)
+        return ska_to_skm_bone_mapping
 
 
 class SkmFile(object):
@@ -797,6 +823,8 @@ def main():
     print(str(len(ska_data.streams)) + " Streams")
     print(str(len(ska_data.animation_data)) + " Anims")
 
+    with open('outska.ska', 'wb') as ska_out_file:
+        ska_data.write(ska_out_file)
     file.close()
 
     return
