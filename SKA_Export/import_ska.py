@@ -289,8 +289,6 @@ def skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH):
     putRig(skm_data)
 
     dump_bones()
-
-    progress.leave_substeps("Finished SKM conversion.")
     return
 
 
@@ -395,7 +393,7 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
         stream_count = anim_header.stream_count
         if stream_count <= 0:
             continue
-        stream_count = 1  # TODO more than one stream (never happens as far as I've seen?)
+        assert stream_count == 1, "TODO more than one stream (never happened as far as I've seen?)"
 
         # Group FCurves by the bone they affect
         curve_groups = dict()
@@ -420,6 +418,8 @@ def ska_to_blender(ska_data, skm_data, importedObjects, USE_INHERIT_ROTATION, US
                         print('Non-unity scaling:', bone_idx, ska_data.bone_data[bone_idx].name,frame, scaling)
                 pass
 
+            raw_frames = stream.raw_frames
+            
             for bone_idx, keyframes in stream.rotation_channels.items():
                 skm_bone_idx = ska_to_skm_bone_mapping[bone_idx]
                 skm_bone = skm_data.bone_data[skm_bone_idx]
@@ -540,6 +540,8 @@ def load_skm(filepath, context, IMAGE_SEARCH=True):
         importedObjects = []  # Fill this list with objects
         progress.enter_substeps(3, "Converting SKM to Blender model...")
         skm_to_blender(skm_data, importedObjects, IMAGE_SEARCH)
+        progress.leave_substeps("Finished SKM conversion.")
+        progress.step()
         
         # In Blender 2.80 API new objects mast be linked not to the scene, but to the scene collections:
         view_layer = context.view_layer
@@ -571,6 +573,7 @@ def load_ska_and_skm(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
     time1 = time.clock()  # for timing the import duration
     # progress = ProgressReport(context.window_manager)
     with ProgressReport(context.window_manager) as progress:
+        
 
         print("importing SKA: %r..." % (filepath), end="")
         # filepath = 'D:/GOG Games/ToEECo8/data/art/meshes/Monsters/Giants/Hill_Giants/Hill_Giant_2/Zomb_giant_2.SKA'
@@ -586,15 +589,20 @@ def load_ska_and_skm(filepath, context, IMPORT_CONSTRAIN_BOUNDS=10.0,
         # Read data into intermediate SkmFile and SkaFile objects
         skm_data = SkmFile()
         ska_data = SkaFile()
+        progress.enter_substeps(5, "Reading SKM & SKA Files %r..." %skm_filepath)
 
         # SKM file
-        progress.enter_substeps(1, "Reading SKM File %r..." %skm_filepath)
+        print("Reading SKM data")
+        progress.step()
         with open(skm_filepath, 'rb') as file:
             print('Opened file: ', skm_filepath)
             skm_data.read(file)
 
+
         # SKA file
-        progress.enter_substeps(1, "Reading SKA File %r..." % ska_filepath)
+        
+        print("Reading SKA File %r..." % ska_filepath)
+        progress.step()
         with open(ska_filepath, 'rb') as file:
             print('Opened file: ', ska_filepath)
             if APPLY_ANIMATIONS:
