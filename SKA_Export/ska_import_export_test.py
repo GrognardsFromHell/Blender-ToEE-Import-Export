@@ -31,7 +31,7 @@ def main():
     def softmax_z(z_raw, z0 = 350, z_linear_range = 100):
         z_scale = z_raw * stream.location_factor
         from math import atan
-        z_scale_new = ( atan( (z_scale-z0) /z_linear_range) + atan( z / z_linear_range ) )
+        z_scale_new = ( atan( (z_scale-z0) /z_linear_range) + atan( z0 / z_linear_range ) )
         z_scale_new = (z_linear_range/2)*z_scale_new
         z_new = int(z_scale_new / stream.location_factor)
         return z_new
